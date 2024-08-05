@@ -1,5 +1,6 @@
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.opensearch.client.opensearch.OpenSearchClient;
+import org.opensearch.client.opensearch._types.SortOptions;
 import org.opensearch.client.opensearch._types.SortOrder;
 import org.opensearch.client.opensearch._types.aggregations.*;
 import org.opensearch.client.opensearch.core.SearchRequest;
@@ -10,6 +11,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 public class CompositeAggregationPaginationSample {
 
@@ -49,22 +51,30 @@ public class CompositeAggregationPaginationSample {
         // merge grouping keys into list
         List<Map<String, CompositeAggregationSource>> sources = List.of(comAggSrcMap1, comAggSrcMap2);
 
-        String mainBucketName = "my_buckets";
+        String mainBucketName = "compAgg";
+        String subBucketName = "topHits";
+
+        List<SortOptions> sortOptions = List.of(
+                SortOptions.of(s1 -> s1.field(fs1 -> fs1.field("ctime").order(SortOrder.Desc)))
+        );
         SearchRequest request = SearchRequest.of(s -> s
                 .index(indexName)
                 .aggregations(mainBucketName, agg -> agg
-                                .composite(comp -> comp
-                                        .size(2) // grouping한 데이터를 1건씩 가쟈오기
-                                        .sources(sources)
-                                )
-                        )
+                                .composite(comp -> comp.size(2).sources(sources))
+                                .aggregations(subBucketName, subAgg -> subAgg
+                                                .topHits(topHits -> topHits
+                                                        .size(1)
+                                                        .sort(sortOptions)
+                                                )
+                                        )
+                )
         );
 
         try {
             boolean isFirstRun = true;
             int bucketSize;
             Map<String, String> afterKey = new HashMap<>();
-            SearchResponse<ObjectNode> response;
+            SearchResponse<ObjectNode> response = null;
 
             do {
                 // 첫 실행이 아니면 request 에 after 추가해서 조회
@@ -72,10 +82,12 @@ public class CompositeAggregationPaginationSample {
                     request = SearchRequest.of(s -> s
                             .index(indexName)
                             .aggregations(mainBucketName, agg -> agg
-                                    .composite(comp -> comp
-                                            .size(2)
-                                            .after(afterKey) // after key
-                                            .sources(sources)
+                                    .composite(comp -> comp.size(2).sources(sources).after(afterKey)) // after key 설정
+                                    .aggregations(subBucketName, subAgg -> subAgg
+                                            .topHits(topHits -> topHits
+                                                    .size(1)
+                                                    .sort(sortOptions)
+                                            )
                                     )
                             )
                     );
@@ -96,11 +108,23 @@ public class CompositeAggregationPaginationSample {
                 bucketSize = compAgg.buckets().array().size();
 
                 // 집계 데이터를 콘솔에 출력
+
+                for (CompositeBucket compBucket : compAgg.buckets().array()) {
+
+                    TopHitsAggregate topHitsAggregate = compBucket.aggregations().get(subBucketName).topHits();
+                    topHitsAggregate.hits().hits().forEach(
+                            hit -> Objects.requireNonNull(hit.source()).to(ObjectNode.class).fields().forEachRemaining(
+                                    entry -> System.out.printf("%s : %s, ", entry.getKey(), entry.getValue())
+                            )
+                    );
+                    System.out.printf("\n");
+
+                }
                 compAgg.buckets().array().forEach(
                         bucket -> System.out.printf("%s : %d\n", bucket.key(), bucket.docCount())
                 );
 
-                // 다음 페이지 검색을 위한 키 설정
+                // 다음 페이지 검색을 위해, after 정보를 afterKey 변수에 담기
                 compAgg.afterKey().forEach((key, value) -> afterKey.put(key, value.toString().replace("\"", "")));
 
             } while (bucketSize > 0);
