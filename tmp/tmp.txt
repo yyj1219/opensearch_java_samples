@@ -1,25 +1,23 @@
-
-public class AiOpsConfigESRD implements IAiOpsConfigRD {
+public class CloudAgentESRD implements ICloudAgentRD {
 
     private CommonConfigure conf;
 
-    public AiOpsConfigESRD() {
+    public CloudAgentESRD() {
         this.conf = CommonConfigure.getInstance();
     }
 
     @Override
-    public Map<String, Object> getConfig(String[] groups) {
-        Map<String, Object> resultMap = new HashMap<>();
-        SearchRequest searchRequest = new SearchRequest("aiops-config");
+    public List<CloudObjectPack> getCloudAgentList() {
+        List<CloudObjectPack> result = new ArrayList<>();
+        SearchRequest searchRequest = new SearchRequest("cloud-agent");
 
-        QueryBuilder queryBuilder = QueryBuilders.boolQuery();
+        QueryBuilder queryBuilder = QueryBuilders.boolQuery()
+                .filter(QueryBuilders.termQuery("active", "Y"));
         SearchSourceBuilder sourceBuilder = new SearchSourceBuilder();
         sourceBuilder.size(conf.es_query_fetch_size);
 
-        if ( groups.length != 0 ) {
-            BoolQueryBuilder boolQuery = new BoolQueryBuilder();
-            boolQuery.filter(QueryBuilders.termsQuery("group", groups));
-            sourceBuilder.query(boolQuery);
+        if (conf.print_es_query) {
+            Logger.println(queryBuilder.toString());
         }
 
         sourceBuilder.query(queryBuilder);
@@ -29,343 +27,29 @@ public class AiOpsConfigESRD implements IAiOpsConfigRD {
         try {
             SearchResponse searchResponse = ConnectionManager.getInstance().getReadClient().search(searchRequest, RequestOptions.DEFAULT);
             for (SearchHit hit : searchResponse.getHits().getHits()) {
-                switch ((String) hit.getSourceAsMap().get("group")) {
-                    case "applicableUnit" :
-                        resultMap.put("applicableUnit", hit.getSourceAsMap().get("applicableUnit"));
-                        break;
-                    case "thresholdConfig" :
-                        List<String> metricList = (List<String>) resultMap.get("thresholdCounter");
-                        if (metricList == null) {
-                            metricList = new ArrayList<>();
-                        }
-                        metricList.add((String) hit.getSourceAsMap().get("counter"));
-                        resultMap.put("thresholdCounter", metricList);
-
-                        List<Map<String,Object>> objects = (List<Map<String,Object>>) hit.getSourceAsMap().remove("object");
-                        if (objects == null || objects.isEmpty()) {
-                            break;
-                        }
-                        List<Map<String,Object>> list = (List<Map<String, Object>>) resultMap.get("thresholdConfig");
-                        if (list == null) {
-                            list = new ArrayList<>();
-                        }
-                        hit.getSourceAsMap().remove("group");
-                        hit.getSourceAsMap().remove("metricName");
-
-                        List<Integer> objHashList = new ArrayList<>();
-                        for (Map<String,Object> objectMap : objects) {
-                            objHashList.add((Integer) objectMap.get("objHash"));
-                        }
-                        hit.getSourceAsMap().put("objHash", objHashList);
-                        list.add(hit.getSourceAsMap());
-                        resultMap.put("thresholdConfig", list);
-                        break;
-                    case "correlationConfig" :
-                        hit.getSourceAsMap().remove("group");
-                        List<Map<String, Object>> coMetricList = (List<Map<String, Object>>) hit.getSourceAsMap().remove("metric");
-                        List<Map<String, Object>> coObjectList = (List<Map<String, Object>>) hit.getSourceAsMap().remove("object");
-                        List<String> mList = new ArrayList<>();
-                        for (Map<String, Object> map: coMetricList) {
-                            mList.add((String) map.get("counter"));
-                        }
-                        List<Integer> oList = new ArrayList<>();
-                        for (Map<String, Object> objectMap: coObjectList) {
-                            oList.add((Integer) objectMap.get("objHash"));
-                        }
-                        hit.getSourceAsMap().put("objHash", oList);
-                        hit.getSourceAsMap().put("counter", mList);
-                        resultMap.put("correlationConfig", hit.getSourceAsMap());
-                        break;
-                    default :
-                        break;
-                }
-            }
-
-            return resultMap;
-        } catch (IOException e) {
-            Logger.println("ai-config-001", e);
-        }
-        return resultMap;
-    }
-
-    @Override
-    public Map<String, Object> getThresholdMetricConfig() {
-        Map<String, Object> resultMap = new HashMap<>();
-        SearchRequest searchRequest = new SearchRequest("aiops-config");
-
-        QueryBuilder queryBuilder = QueryBuilders.boolQuery();
-        SearchSourceBuilder sourceBuilder = new SearchSourceBuilder();
-        BoolQueryBuilder boolQuery = new BoolQueryBuilder();
-        boolQuery.filter(QueryBuilders.termsQuery("group", new String[]{"applicableUnit", "thresholdConfig"}));
-        sourceBuilder.query(boolQuery);
-        sourceBuilder.size(conf.es_query_fetch_size);
-
-        sourceBuilder.query(queryBuilder);
-        searchRequest.source(sourceBuilder);
-        searchRequest.indicesOptions(IndicesOptions.LENIENT_EXPAND_OPEN);
-
-        try {
-            SearchResponse searchResponse = ConnectionManager.getInstance().getReadClient().search(searchRequest, RequestOptions.DEFAULT);
-            for (SearchHit hit : searchResponse.getHits().getHits()) {
-                switch ((String) hit.getSourceAsMap().get("group")) {
-                    case "applicableUnit" :
-                        resultMap.put("applicableUnit", hit.getSourceAsMap().get("applicableUnit"));
-                        break;
-                    case "thresholdConfig" :
-                        List<Map<String,Object>> objects = (List<Map<String,Object>>) hit.getSourceAsMap().remove("object");
-                        if (objects == null || objects.isEmpty()) {
-                            break;
-                        }
-                        Map<String,Object> thresholdMap = (Map<String, Object>) resultMap.get("thresholdConfig");
-                        if (thresholdMap == null) {
-                            thresholdMap = new ConcurrentHashMap<>();
-                        }
-
-                        List<Integer> objHashList = new ArrayList<>();
-                        for (Map<String,Object> objectMap : objects) {
-                            objHashList.add((Integer) objectMap.get("objHash"));
-                        }
-                        thresholdMap.put((String) hit.getSourceAsMap().get("counter"), objHashList);
-                        resultMap.put("thresholdConfig", thresholdMap);
-                        break;
-                    default :
-                        break;
-                }
-            }
-
-            return resultMap;
-        } catch (Exception e) {
-            Logger.println("ai-config-002", e);
-        }
-        return resultMap;
-    }
-
-    @Override
-    public Map<String, DynamicThreshold> getDynamicThreshold() {
-        Map<String, DynamicThreshold> result = new ConcurrentHashMap<>();
-
-        Map<String, Object> configMap = getThresholdMetricConfig();
-
-        if ( configMap == null || configMap.isEmpty()) {
-            return result;
-        }
-
-        Date now = new Date();
-        SimpleDateFormat sdf = new SimpleDateFormat("HH");
-        sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
-        String utcNow = sdf.format(now);
-
-        Calendar cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
-        cal.setTime(now);
-        int dayOfWeek = cal.get(Calendar.DAY_OF_WEEK);
-
-        SearchRequest searchRequest = new SearchRequest(getLastInsertIndex());
-        SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
-
-        List<CompositeValuesSourceBuilder<?>> sourceBuilderList = new ArrayList<>();
-
-        BoolQueryBuilder boolQuery = new BoolQueryBuilder();
-        boolQuery.filter(
-                QueryBuilders.termsQuery(
-                        "startTime", utcNow.concat(":00")
-                )
-        );
-        if (configMap.get("applicableUnit").equals("AU1")) {
-            boolQuery.filter(
-                    QueryBuilders.termQuery("applicableTarget", (dayOfWeek - 2 < 0 ? dayOfWeek + 5 : dayOfWeek - 2))
-            );
-        } else {
-            int unit = 10;
-            if (dayOfWeek == 1 || dayOfWeek == 7) {
-                unit = 20;
-            }
-            boolQuery.filter(QueryBuilders.termQuery("applicableTarget", unit));
-        }
-
-        sourceBuilderList.add(new TermsValuesSourceBuilder("counter").field("counter"));
-        sourceBuilderList.add(new TermsValuesSourceBuilder("objHash").field("objHash"));
-        CompositeAggregationBuilder compositeAggregationBuilder = new CompositeAggregationBuilder("comAgg", sourceBuilderList);
-
-        AggregationBuilder aggregation = compositeAggregationBuilder.size(1000)
-                .subAggregation(AggregationBuilders.topHits("top")
-                        .sort("ctime", SortOrder.DESC)
-                        .sort("startTime", SortOrder.DESC).size(1));
-
-        searchSourceBuilder.aggregation(aggregation).query(boolQuery);
-        searchRequest.source(searchSourceBuilder).indicesOptions(IndicesOptions.LENIENT_EXPAND_OPEN);
-        try {
-            SearchResponse searchResponse = ConnectionManager.getInstance().getReadClient().search(searchRequest, RequestOptions.DEFAULT);
-            Aggregations aggregations = searchResponse.getAggregations();
-            if (aggregations == null) {
-                return result;
-            }
-            ParsedComposite agg = (ParsedComposite) aggregations.asList().get(0);
-            for (ParsedComposite.ParsedBucket entry : agg.getBuckets()) {
-                TopHits topHits = entry.getAggregations().get("top");
-                for (SearchHit hit : topHits.getHits().getHits()) {
-                    Map<String, Object> tempMap = hit.getSourceAsMap();
-                    List<Integer> objList = (List<Integer>) ((Map<String, Object>)configMap.get("thresholdConfig")).get(tempMap.get("counter"));
-                    if (objList == null || !objList.contains(tempMap.get("objHash"))) {
-                        continue;
+                CloudObjectPack objectPack = new CloudObjectPack();
+                objectPack.objHash = (int) hit.getSourceAsMap().get("objectId");
+                objectPack.objName = (String) hit.getSourceAsMap().get("objectName");
+                objectPack.address = (String) hit.getSourceAsMap().get("ipAddress");
+                objectPack.port = (int) hit.getSourceAsMap().get("port");
+                objectPack.alive = hit.getSourceAsMap().get("active").equals("Y") ? true : false;
+                objectPack.wakeup = (long) hit.getSourceAsMap().get("wakeupTime");
+                for (Map<String,Object> tag : (List<Map<String,Object>>)hit.getSourceAsMap().get("tags")) {
+                    String key = (String) tag.get("key");
+                    Object value = tag.get("value");
+                    if (value instanceof String) {
+                        objectPack.tags.put(key, (String) value);
+                    } else if (value instanceof Number) {
+                        objectPack.tags.put(key, ((Number) value).longValue());
+                    } else if (value instanceof Boolean) {
+                        objectPack.tags.put(key, new BooleanValue((boolean) value));
                     }
-                    DynamicThreshold tempValues = new DynamicThreshold();
-                    if (tempMap.get("upperThreshold") != null && !(String.valueOf(tempMap.get("upperThreshold"))).isEmpty()) {
-                        tempValues.setUpperValue((Double) tempMap.get("upperThreshold"));
-                    }
-                    if (tempMap.get("upperThreshold") != null && !(String.valueOf(tempMap.get("lowerThreshold"))).isEmpty()) {
-                        tempValues.setLowerValue((Double) tempMap.get("lowerThreshold"));
-                    }
-                    tempValues.setCounterkey((String) tempMap.get("counter"));
-                    tempValues.setObjHash((Integer) tempMap.get("objHash"));
-                    result.put(String.format("%d:%s", tempMap.get("objHash"), tempMap.get("counter")), tempValues);
                 }
-            }
-            return result;
-        } catch (Exception e) {
-            Logger.println("ai-config-003", e);
-        }
-
-        return result;
-    }
-
-    @Override
-    public Map<String, Double> getCorrelationCoEfficient() {
-        Map<String, Double> result = new HashMap<>();
-
-        Date now = new Date();
-        SimpleDateFormat sdf = new SimpleDateFormat("HH");
-        sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
-        String utcNow = sdf.format(now);
-
-        Calendar cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
-        cal.setTime(now);
-        int dayOfWeek = cal.get(Calendar.DAY_OF_WEEK);
-
-        SearchRequest searchRequest = new SearchRequest("aiops-correlation-counter-set");
-        SearchSourceBuilder sourceBuilder = new SearchSourceBuilder();
-        List<CompositeValuesSourceBuilder<?>> sourceBuilderList = new ArrayList<>();
-
-        BoolQueryBuilder boolQuery = new BoolQueryBuilder();
-        boolQuery.filter(QueryBuilders.termsQuery("startTime", utcNow.concat(":00")));
-        boolQuery.filter(QueryBuilders.termQuery("applicableTarget", (dayOfWeek - 2 < 0 ? dayOfWeek + 5 : dayOfWeek - 2)));
-
-        sourceBuilderList.add(new TermsValuesSourceBuilder("correlationCounterSet").field("correlationCounterSet"));
-        sourceBuilderList.add(new TermsValuesSourceBuilder("objHash").field("objHash"));
-        CompositeAggregationBuilder compositeAggregationBuilder = new CompositeAggregationBuilder("comAgg", sourceBuilderList);
-
-        AggregationBuilder aggregation = compositeAggregationBuilder.size(1000)
-                .subAggregation(AggregationBuilders.topHits("top").sort("ctime", SortOrder.DESC).sort("startTime", SortOrder.DESC).size(1));
-
-        sourceBuilder.aggregation(aggregation).query(boolQuery);
-        searchRequest.source(sourceBuilder).indicesOptions(IndicesOptions.LENIENT_EXPAND_OPEN);
-        try {
-            SearchResponse searchResponse = ConnectionManager.getInstance().getReadClient().search(searchRequest, RequestOptions.DEFAULT);
-            Aggregations aggregations = searchResponse.getAggregations();
-            if (aggregations == null) {
-                return result;
-            }
-            ParsedComposite agg = (ParsedComposite) aggregations.asList().get(0);
-            for (ParsedComposite.ParsedBucket entry : agg.getBuckets()) {
-                TopHits topHits = entry.getAggregations().get("top");
-                for (SearchHit hit : topHits.getHits().getHits()) {
-                    Map<String, Object> tempMap = hit.getSourceAsMap();
-                    String keys = (String) tempMap.get("correlationCounterSet");
-                    String[] keySet = keys.split(":");
-                    Arrays.sort(keySet);
-                    String newKeys = String.format("%s:%s", keySet[0], keySet[1]);
-                    result.put(String.format("%d:%s",tempMap.get("objHash"), newKeys), (Double) tempMap.get("correlationCoefficient"));
-                }
-            }
-            return result;
-        } catch (Exception e) {
-            Logger.println("ai-config-004", e);
-        }
-
-        return result;
-    }
-
-    @Override
-    public Map<Integer, List<String>> getCorrelationKeySet() {
-        Map<Integer, List<String>> result = new ConcurrentHashMap<>();
-
-        SearchRequest searchRequest = new SearchRequest("aiops-config");
-        SearchSourceBuilder sourceBuilder = new SearchSourceBuilder();
-        sourceBuilder.fetchSource(new String[]{"correlationKeySet", "object"}, null);
-        sourceBuilder.size(conf.es_query_fetch_size);
-
-        BoolQueryBuilder boolQuery = new BoolQueryBuilder();
-        boolQuery.filter(QueryBuilders.termQuery("group", "correlationKeySet"));
-        if (conf.print_es_query) {
-            Logger.println(boolQuery.toString());
-        }
-
-        sourceBuilder.query(boolQuery);
-        searchRequest.source(sourceBuilder);
-        searchRequest.indicesOptions(IndicesOptions.LENIENT_EXPAND_OPEN);
-        try {
-            SearchResponse searchResponse = ConnectionManager.getInstance().getReadClient().search(searchRequest, RequestOptions.DEFAULT);
-            for (SearchHit searchHit : searchResponse.getHits().getHits()) {
-                Map<String, Object> objectMap = (Map<String, Object>) searchHit.getSourceAsMap().get("object");
-                if (searchHit.getSourceAsMap().get("correlationKeySet") != null) {
-                    List<Map<String, Object>> list = new ObjectMapper().readValue((String)searchHit.getSourceAsMap().get("correlationKeySet"), List.class);
-                    String key1 = (String) ((Map<String, Object>)list.get(0).get("key1")).get("counter");
-                    String key2 = (String) ((Map<String, Object>)list.get(0).get("key2")).get("counter");
-                    List<String> keyList = new ArrayList<>(Arrays.asList(key1, key2));
-                    Collections.sort(keyList);
-                    result.put((Integer) objectMap.get("objHash"), keyList);
-                }
+                result.add(objectPack);
             }
         } catch (IOException e) {
-            Logger.println("ai-config-005", e);
+            Logger.println("cloud-agent-001",e);
         }
         return result;
-    }
-
-    @Override
-    public Map<String,String> getCounterKey() {
-        Map<String,String> result = new ConcurrentHashMap<>();
-        SearchRequest searchRequest = new SearchRequest("counterkey");
-        SearchSourceBuilder sourceBuilder = new SearchSourceBuilder();
-        sourceBuilder.fetchSource(new String[]{"keyId","keyName"}, null);
-        sourceBuilder.size(conf.es_query_fetch_size);
-
-        BoolQueryBuilder boolQuery = new BoolQueryBuilder();
-
-        if (conf.print_es_query) {
-            Logger.println(boolQuery.toString());
-        }
-
-        sourceBuilder.query(boolQuery);
-        searchRequest.source(sourceBuilder);
-        searchRequest.indicesOptions(IndicesOptions.LENIENT_EXPAND_OPEN);
-
-        try {
-            SearchResponse searchResponse = ConnectionManager.getInstance().getReadClient().search(searchRequest, RequestOptions.DEFAULT);
-            for (SearchHit hit : searchResponse.getHits().getHits()) {
-                Map<String, Object> tempMap = hit.getSourceAsMap();
-                result.put((String) tempMap.get("keyId"), (String) tempMap.get("keyName"));
-            }
-
-            return result;
-        } catch (IOException e) {
-            Logger.println("ai-config-006", e);
-        }
-        return null;
-    }
-
-    private String getLastInsertIndex() {
-        GetIndexRequest request = new GetIndexRequest("aiops-dynamic-threshold-2"+"*");
-        GetIndexResponse getIndexResponse = null;
-        try {
-            getIndexResponse = ConnectionManager.getInstance().getReadClient().indices().get(request, RequestOptions.DEFAULT);
-        } catch (IOException e) {
-            Logger.println("ai-config-007", e);
-            return null;
-        }
-
-        String[] indexArr = getIndexResponse.getIndices();
-
-        Arrays.sort(indexArr);
-        return indexArr[indexArr.length - 1];
     }
 }
