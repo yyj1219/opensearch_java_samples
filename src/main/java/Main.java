@@ -44,13 +44,16 @@ public class Main {
         sdSample.singleDocumentDSLwithOf("sample-index", "doc1"); // 도큐먼트 생성 혹은 갱신
         sdSample.retrieveSingleDocument("sample-index", "doc1"); // 도큐먼트 읽어오기
 
-        // 도큐먼트 search 테스트
+        // 도큐먼트 searchWithTerm 테스트
         SearchDocumentsSample searchSample = new SearchDocumentsSample(client);
-        searchSample.search("sample-index");
+        searchSample.searchWithTerm("sample-index");
         Map<String, Object> filterMap = new HashMap<>();
         filterMap.put("counter", "15U");
         filterMap.put("objHash", 1113030459);
-        searchSample.search("sample-index", filterMap);
+        searchSample.searchWithTerm("sample-index", filterMap);
+
+        // 도큐먼트 searchWithTerms 테스트
+        searchSample.searchWithTerms("sample-index");
 
         // scroll 테스트
         ScrollSample scrollSample = new ScrollSample(client);
