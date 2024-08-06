@@ -1,12 +1,11 @@
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.opensearch.client.opensearch.OpenSearchClient;
+import org.opensearch.client.opensearch._types.FieldValue;
 import org.opensearch.client.opensearch._types.query_dsl.*;
 import org.opensearch.client.opensearch.core.SearchRequest;
 import org.opensearch.client.opensearch.core.SearchResponse;
-import org.opensearch.client.opensearch.core.search.Hit;
-import org.opensearch.client.opensearch.core.search.TotalHits;
-import org.opensearch.client.opensearch.core.search.TotalHitsRelation;
+import org.opensearch.client.opensearch.core.search.*;
 import org.opensearch.client.opensearch.generic.OpenSearchClientException;
 
 import java.io.IOException;
@@ -14,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 public class SearchDocumentsSample {
 
@@ -24,12 +24,90 @@ public class SearchDocumentsSample {
     }
 
     /**
-     * index에서 search API에 단순 term 조건 하나만 이용해서 데이터 검색
+     * search API - terms 쿼리 하나만 이용해서 데이터 검색
      * @param indexName
      */
-    public void search(String indexName) {
+    public void searchWithTerms(String indexName) {
+        System.out.println("= SearchDocumentsSample.searchWithTerms =");
 
-        System.out.println("= SearchDocumentsSample.search =");
+        String[] filedValues = {"15U", "16U"};
+        List<String> filedValuesList = Arrays.asList(filedValues);
+
+        BoolQuery boolQuery = BoolQuery.of(bool -> bool
+                .filter(filter -> filter
+                        .terms(terms -> terms
+                                .field("counter")
+                                .terms(v -> v
+                                        .value(
+                                                filedValuesList.stream().map(FieldValue::of).collect(Collectors.toList())
+                                        )
+                                )
+                        )
+                )
+        );
+
+        SearchRequest request = SearchRequest.of(s -> s
+                .index(indexName)
+                .query(boolQuery.toQuery())
+                .size(10) // 10건 반환
+                .source(SourceConfig.of(sc -> sc
+                        .filter(SourceFilter.of(sf -> sf
+                                .includes("counter", "objHash", "value")
+                                .excludes("ctime")
+                                )
+                        ))
+                )
+                .docvalueFields(Arrays.asList(
+                        FieldAndFormat.of(f -> f.field("counter")),
+                        FieldAndFormat.of(f -> f.field("ctime")),
+                        FieldAndFormat.of(f -> f.field("objHash")),
+                        FieldAndFormat.of(f -> f.field("value"))
+                ))
+        );
+
+        try {
+            SearchResponse<Map> response = client.search(request, Map.class);
+
+            // 모든 데이터가 반환됐는지, 더 받아와야 할 데이터가 있는지 체크
+            TotalHits total = response.hits().total();
+            boolean isExtractResult = total.relation() == TotalHitsRelation.Eq;
+            if (isExtractResult) {
+                System.out.println("There are " + total.value() + " results.");
+            } else {
+                System.out.println("There are more then " + total.value() + " results.");
+            }
+
+            List<Hit<Map>> hits = response.hits().hits();
+            for (Hit<Map> hit:hits) {
+
+                if (hit.source() == null) {
+                    System.out.println("Document has no source.");
+                } else {
+                    System.out.println("Document source: \n" + hit.source());
+                }
+
+                // docvalue_fields 처리
+                if (hit.fields() != null && !hit.fields().isEmpty()) {
+                    System.out.print("Document has docvalue_fields: \n{");
+                    hit.fields().keySet().forEach(key -> {
+                        ArrayNode v = hit.fields().get(key).to(ArrayNode.class);
+                        System.out.print(key + ":" + v.get(0) + " ");
+                    });
+                    System.out.println("}");
+                }
+            }
+        } catch (OpenSearchClientException | IOException e) {
+            System.out.println(e.getMessage());
+        }
+    }
+
+    /**
+     * search API - 단순 term 쿼리 하나만 이용해서 데이터 검색
+     * @param indexName
+     */
+    public void searchWithTerm(String indexName) {
+
+        System.out.println("= SearchDocumentsSample.searchWithTerm =");
 
         Query query = BoolQuery.of(bool -> bool
                 .filter(filter -> filter
@@ -52,20 +130,6 @@ public class SearchDocumentsSample {
                         FieldAndFormat.of(f -> f.field("value"))
                 ))
         );
-
-        /* Request 내용을 문자열로 출력하고 싶은데... 안 되네;;
-        try {
-            JsonFactory factory = new JsonFactory();
-            StringWriter jsonObjectWriter = new StringWriter();
-            JacksonJsonpGenerator generator =
-                    new JacksonJsonpGenerator(factory.createGenerator(jsonObjectWriter));
-            JsonpMapper mapper = client._transport().jsonpMapper();
-            query.serialize(generator, mapper);
-            mapper.toString();
-        } catch (IOException e) {
-            System.out.println(e.getMessage());
-        }
-         */
 
         try {
             SearchResponse<ObjectNode> response = client.search(request, ObjectNode.class);
@@ -103,11 +167,11 @@ public class SearchDocumentsSample {
     }
 
     /**
-     * 매개변수로 받은 필터링 조건들을을 사용하여 index에서 search API에 term 조건 여러개를 적용해서 데이터 검색
+     * search API - 단순 term 쿼리 여러 개를 적용해서 데이터 검색
      * @param indexName
      * @param filterMap
      */
-    public void search(String indexName, Map<String,Object> filterMap) {
+    public void searchWithTerm(String indexName, Map<String,Object> filterMap) {
 
         // 데이터 필터에 사용할 조건 리스트
         List<Query> conditions = new ArrayList<>();
@@ -140,7 +204,7 @@ public class SearchDocumentsSample {
             }
         });
 
-        // search query 작성
+        // searchWithTerm query 작성
         Query query = Query.of(
                 q -> q.bool(
                         bool -> bool
@@ -148,7 +212,7 @@ public class SearchDocumentsSample {
                 )
         ).bool().toQuery();
 
-        // search request 작성
+        // searchWithTerm request 작성
         SearchRequest request = SearchRequest.of(s -> s
                 .index(indexName)
                 .query(query)
@@ -162,7 +226,7 @@ public class SearchDocumentsSample {
         );
 
         try {
-            // search API 실행
+            // searchWithTerm API 실행
             SearchResponse<ObjectNode> response = client.search(request, ObjectNode.class);
 
             // 모든 데이터가 반환됐는지, 더 받아와야 할 데이터가 있는지 체크
