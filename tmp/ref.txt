@@ -1,75 +1,174 @@
-import org.elasticsearch.action.search.SearchRequest;
-import org.elasticsearch.action.search.SearchResponse;
-import org.elasticsearch.action.support.IndicesOptions;
-import org.elasticsearch.client.RequestOptions;
-import org.elasticsearch.index.query.QueryBuilder;
-import org.elasticsearch.index.query.QueryBuilders;
-import org.elasticsearch.search.SearchHit;
-import org.elasticsearch.search.builder.SearchSourceBuilder;
+package tuna.server.db.rd.opensearch;
+
+import org.json.simple.JSONArray;
+import org.opensearch.client.opensearch.OpenSearchClient;
+import org.opensearch.client.opensearch._types.FieldValue;
+import org.opensearch.client.opensearch._types.SortOrder;
+import org.opensearch.client.opensearch._types.query_dsl.BoolQuery;
+import org.opensearch.client.opensearch._types.query_dsl.Query;
+import org.opensearch.client.opensearch._types.query_dsl.TermQuery;
+import org.opensearch.client.opensearch.core.SearchRequest;
+import org.opensearch.client.opensearch.core.SearchResponse;
+import org.opensearch.client.opensearch.core.search.Hit;
+import org.opensearch.client.opensearch.core.search.SourceConfig;
+import org.opensearch.client.opensearch.core.search.SourceFilter;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import scouter.config.CommonConfigure;
-import scouter.lang.pack.CloudObjectPack;
-import scouter.lang.value.BooleanValue;
 import scouter.server.Logger;
-import tuna.server.db.common.elastic.ConnectionManager;
-import tuna.server.db.rd.ICloudAgentRD;
+import tuna.server.db.common.opensearch.OpenSearchConnectionManager;
+import tuna.server.db.rd.ICloudConfigRD;
 
 import java.io.IOException;
-import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
-public class CloudAgentESRD implements ICloudAgentRD {
+public class CloudConfigOschRD  {
 
     private CommonConfigure conf;
 
-    public CloudAgentESRD() {
+    public CloudConfigOschRD() {
         this.conf = CommonConfigure.getInstance();
     }
 
-    @Override
-    public List<CloudObjectPack> getCloudAgentList() {
-        List<CloudObjectPack> result = new ArrayList<>();
-        SearchRequest searchRequest = new SearchRequest("cloud-agent");
+    public Map<String, Object> getAgent(int id) {
+        OpenSearchClient client = OpenSearchConnectionManager.getInstance().getReadClient();
 
-        QueryBuilder queryBuilder = QueryBuilders.boolQuery()
-                .filter(QueryBuilders.termQuery("active", "Y"));
-        SearchSourceBuilder sourceBuilder = new SearchSourceBuilder();
-        sourceBuilder.size(conf.es_query_fetch_size);
+        Query query = BoolQuery.of(b -> b
+                .filter(f -> f
+                        .term(t -> t
+                                .field("objectId")
+                                .value(FieldValue.of(id))
+                        )
+                )
+        ).toQuery();
+
+        SourceConfig sourceConfig = SourceConfig.of(sc -> sc
+                .filter(SourceFilter.of(sf -> sf
+                        .includes("objectId", "active", "account", "ipAddress", "port")
+                        .excludes("wakeupTime", "updateDate")
+                )));
+
+        SearchRequest request = SearchRequest.of(s -> s
+                .index("cloud-agent")
+                .query(query)
+                .size(conf.es_query_fetch_size)
+                .source(sourceConfig)
+        );
 
         if (conf.print_es_query) {
-            Logger.println(queryBuilder.toString());
+            Logger.println(request.toString());
         }
-
-        sourceBuilder.query(queryBuilder);
-        searchRequest.source(sourceBuilder);
-        searchRequest.indicesOptions(IndicesOptions.LENIENT_EXPAND_OPEN);
 
         try {
-            SearchResponse searchResponse = ConnectionManager.getInstance().getReadClient().search(searchRequest, RequestOptions.DEFAULT);
-            for (SearchHit hit : searchResponse.getHits().getHits()) {
-                CloudObjectPack objectPack = new CloudObjectPack();
-                objectPack.objHash = (int) hit.getSourceAsMap().get("objectId");
-                objectPack.objName = (String) hit.getSourceAsMap().get("objectName");
-                objectPack.address = (String) hit.getSourceAsMap().get("ipAddress");
-                objectPack.port = (int) hit.getSourceAsMap().get("port");
-                objectPack.alive = hit.getSourceAsMap().get("active").equals("Y") ? true : false;
-                objectPack.wakeup = (long) hit.getSourceAsMap().get("wakeupTime");
-                for (Map<String,Object> tag : (List<Map<String,Object>>)hit.getSourceAsMap().get("tags")) {
-                    String key = (String) tag.get("key");
-                    Object value = tag.get("value");
-                    if (value instanceof String) {
-                        objectPack.tags.put(key, (String) value);
-                    } else if (value instanceof Number) {
-                        objectPack.tags.put(key, ((Number) value).longValue());
-                    } else if (value instanceof Boolean) {
-                        objectPack.tags.put(key, new BooleanValue((boolean) value));
-                    }
-                }
-                result.add(objectPack);
+            SearchResponse<Map> response = client.search(request, Map.class);
+            if (!response.hits().hits().isEmpty()) {
+                return response.hits().hits().get(0).source();
             }
         } catch (IOException e) {
-            Logger.println("cloud-agent-001",e);
+            Logger.println("cloud-config-001", e);
         }
-        return result;
+        return null;
     }
+
+    public JSONArray getCredential(String cspName, String name) {
+        JSONArray jsonArray = new JSONArray();
+        OpenSearchClient client = Objects.requireNonNull(OpenSearchConnectionManager.getInstance()).getReadClient();
+
+        Query query = BoolQuery.of(b -> b
+                .filter(f -> f
+                        .term(t -> t.field("csp").value(FieldValue.of(cspName)))
+                )
+                .filter(f -> f
+                        .term(t -> t.field("name").value(FieldValue.of(name)))
+                )
+        ).toQuery();
+
+        String[] includeFields;
+        switch (cspName) {
+            case "AWS":
+                Arrays.asList("name", "csp", "accessKeyId", "secretAccessKey");
+                includeFields = new String[]{"name", "csp", "accessKeyId", "secretAccessKey"};
+                break;
+            case "GCP":
+                includeFields = new String[]{"name", "csp", "projectId", "region", "keyFile"};
+                break;
+            case "Azure":
+                includeFields = new String[]{"name", "csp", "subscriptionId", "tenantId", "clientId", "clientSecret", "resourceGroupName", "location"};
+                break;
+            default:
+                includeFields = new String[]{};
+        }
+
+        SearchRequest request = SearchRequest.of(s -> s
+                .index("cloud-credential")
+                .query(query)
+                .size(conf.es_query_fetch_size)
+                .source(SourceConfig.of(sc -> sc
+                        .filter(SourceFilter.of(sf -> sf
+                                .includes(Arrays.asList(includeFields))
+                        ))
+                ))
+        );
+
+        if (conf.print_es_query) {
+            Logger.println(request.toString());
+        }
+
+        try {
+            SearchResponse<Map> response = client.search(request, Map.class);
+            List<Hit<Map>> hits = response.hits().hits();
+            if (!hits.isEmpty()) {
+                jsonArray.add(hits.get(0).source());
+            }
+        } catch (IOException e) {
+            Logger.println("cloud-config-002", e);
+        }
+        return jsonArray;
+    }
+
+    private SearchResponse<Map> getCredentialList(String[] names) throws IOException {
+        OpenSearchClient client = Objects.requireNonNull(OpenSearchConnectionManager.getInstance()).getReadClient();
+
+        List<FieldValue> nameValues = Arrays.stream(names)
+                .map(FieldValue::of)
+                .collect(Collectors.toList());
+
+        Query query = BoolQuery.of(b -> b
+                .filter(f -> f
+                        .terms(t -> t
+                                .field("name")
+                                .terms(v -> v.value(nameValues))
+                        )
+                )
+        ).toQuery();
+
+        String[] includeFields = {
+                "name", "csp",
+                "accessKeyId", "secretAccessKey",
+                "projectId", "region", "keyFile",
+                "subscriptionId", "tenantId", "clientId", "clientSecret", "resourceGroupName", "location"
+        };
+
+        SearchRequest request = SearchRequest.of(s -> s
+                .index("cloud-credential")
+                .query(query)
+                .sort(so -> so.field(f -> f.field("name").order(SortOrder.Asc)))
+                .size(conf.es_query_fetch_size)
+                .source(SourceConfig.of(sc -> sc
+                        .filter(SourceFilter.of(sf -> sf
+                                .includes(Arrays.asList(includeFields))
+                        ))
+                ))
+        );
+
+        if (conf.print_es_query) {
+            Logger.println(request.toString());
+        }
+
+        return client.search(request, Map.class);
+    }    
 }
