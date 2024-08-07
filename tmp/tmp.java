@@ -1,57 +1,41 @@
-import org.elasticsearch.action.search.SearchRequest;
-import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.action.support.IndicesOptions;
 import org.elasticsearch.client.RequestOptions;
-import org.elasticsearch.client.RestHighLevelClient;
+import org.elasticsearch.client.core.CountRequest;
+import org.elasticsearch.client.core.CountResponse;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryBuilders;
-import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 import scouter.server.Logger;
+import scouter.util.DateUtil;
 import tuna.server.db.common.elastic.ConnectionManager;
-import tuna.server.db.rd.ICounterKeyRD;
-import tuna.server.model.CounterKeyInfo;
+import tuna.server.db.rd.IEndUserAggRD;
 
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
-public class CounterKeyESRD implements ICounterKeyRD {
-
+public class EndUserAggESRD implements IEndUserAggRD {
     @Override
-    public Map<String, CounterKeyInfo> getCounterKeyMap() {
-        Map<String, CounterKeyInfo> counterKeyMap = new ConcurrentHashMap<>();
-
-        RestHighLevelClient client = ConnectionManager.getInstance().getReadClient();
-
-        SearchRequest searchRequest = new SearchRequest("counterkey");
-        SearchSourceBuilder sourceBuilder = new SearchSourceBuilder();
-        String[] target = new String[]{"host", "javaee", "httpd", "k8sNode", "k8sNamespace", "k8sContainer", "k8sCluster"};
-        QueryBuilder queryBuilder = QueryBuilders.boolQuery().filter(QueryBuilders.termsQuery("target", target));
-
-        String[] inField = new String[]{"keyId", "target", "agg"};
-        sourceBuilder.query(queryBuilder);
-        sourceBuilder.fetchSource(inField, null);
-        sourceBuilder.size(1000);
-
-        searchRequest.source(sourceBuilder).indicesOptions(IndicesOptions.LENIENT_EXPAND_OPEN);
-
-        try {
-            SearchResponse searchResponse = client.search(searchRequest, RequestOptions.DEFAULT);
-            List<SearchHit> searchHits = Arrays.asList(searchResponse.getHits().getHits());
-            for (SearchHit hit : searchHits) {
-                counterKeyMap.put(hit.getSourceAsMap().get("keyId").toString()
-                        , new CounterKeyInfo(hit.getSourceAsMap().get("keyId").toString()
-                                , hit.getSourceAsMap().get("target").toString()
-                                , hit.getSourceAsMap().get("agg").toString()));
-            }
-            Logger.println("CounterKeyMap Retrieve Complete");
-        } catch (IOException e) {
-            Logger.println(e.getMessage());
+    public long getSessionCount(long startTime, long endTime) {
+        List<String> timeList = DateUtil.getSearchRangeMMTime("enduser-aggregation-", startTime, endTime);
+        if (timeList == null) {
+            return 0;
         }
 
-        return counterKeyMap;
+        String[] indexes = timeList.toArray(new String[timeList.size()]);
+        CountRequest countRequest = new CountRequest(indexes);
+        SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
+
+        QueryBuilder queryBuilder = QueryBuilders.boolQuery()
+                .filter(QueryBuilders.rangeQuery("startTime").gte(startTime).lte(endTime));
+
+        searchSourceBuilder.query(queryBuilder);
+        countRequest.source(searchSourceBuilder).indicesOptions(IndicesOptions.LENIENT_EXPAND_OPEN);
+        try {
+            CountResponse response = ConnectionManager.getInstance().getReadClient().count(countRequest, RequestOptions.DEFAULT);
+            return response.getCount();
+        } catch (IOException e) {
+            Logger.println(e);
+            return 0;
+        }
     }
 }
