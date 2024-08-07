@@ -2,7 +2,9 @@ package tuna.server.db.rd.opensearch;
 
 import org.json.simple.JSONArray;
 import org.opensearch.client.opensearch.OpenSearchClient;
+import org.opensearch.client.opensearch._types.ExpandWildcard;
 import org.opensearch.client.opensearch._types.FieldValue;
+import org.opensearch.client.opensearch._types.SortOptions;
 import org.opensearch.client.opensearch._types.SortOrder;
 import org.opensearch.client.opensearch._types.query_dsl.BoolQuery;
 import org.opensearch.client.opensearch._types.query_dsl.Query;
@@ -170,5 +172,92 @@ public class CloudConfigOschRD  {
         }
 
         return client.search(request, Map.class);
-    }    
+    }
+
+    private SearchResponse<Map> getConfigurationList(int[] cloudAgentIds) throws IOException {
+        OpenSearchClient client = Objects.requireNonNull(OpenSearchConnectionManager.getInstance()).getReadClient();
+
+        List<FieldValue> agentIdValues = Arrays.stream(cloudAgentIds)
+                .mapToObj(FieldValue::of)
+                .collect(Collectors.toList());
+
+        Query query = BoolQuery.of(b -> b
+                .filter(f -> f
+                        .terms(t -> t
+                                .field("agentId")
+                                .terms(v -> v.value(agentIdValues))
+                        )
+                )
+        ).toQuery();
+
+        String[] includeFields = {
+                "name", "agentId", "agentName", "csp", "credentials", "use", "collectInterval", "cspService", "updateDate"
+        };
+
+        SearchRequest request = SearchRequest.of(s -> s
+                .index("cloud-configuration")
+                .query(query)
+                .size(conf.es_query_fetch_size)
+                .source(SourceConfig.of(sc -> sc
+                        .filter(SourceFilter.of(sf -> sf
+                                .includes(Arrays.asList(includeFields))
+                        ))
+                ))
+                .ignoreUnavailable(true)
+                .allowNoIndices(true)
+                .expandWildcards(ExpandWildcard.Open)
+        );
+
+        if (conf.print_es_query) {
+            Logger.println(request.toString());
+        }
+
+        return client.search(request, Map.class);
+    }
+
+    private SearchResponse<Map> getMetricList(String[] ids) throws IOException {
+        OpenSearchClient client = Objects.requireNonNull(OpenSearchConnectionManager.getInstance()).getReadClient();
+
+        List<FieldValue> accountIdValues = Arrays.stream(ids)
+                .map(FieldValue::of)
+                .collect(Collectors.toList());
+
+        Query query = BoolQuery.of(b -> b
+                .filter(f -> f
+                        .terms(t -> t
+                                .field("accountId")
+                                .terms(v -> v.value(accountIdValues))
+                        )
+                )
+        ).toQuery();
+
+        String[] includeFields = {
+                "accountId", "namespace", "dimensions", "metricName", "csp", "collectInterval", "alignmentPeriod"
+        };
+
+        List<SortOptions> sortOptions = List.of(
+                SortOptions.of(so -> so.field(f -> f.field("accountId").order(SortOrder.Asc))),
+                SortOptions.of(so -> so.field(f -> f.field("namespace").order(SortOrder.Asc)))
+        );
+        SearchRequest request = SearchRequest.of(s -> s
+                .index("cloud-manage-metrics")
+                .query(query)
+                .sort(sortOptions)
+                .size(conf.es_query_fetch_size)
+                .source(SourceConfig.of(sc -> sc
+                        .filter(SourceFilter.of(sf -> sf
+                                .includes(Arrays.asList(includeFields))
+                        ))
+                ))
+                .ignoreUnavailable(true)
+                .allowNoIndices(true)
+                .expandWildcards(ExpandWildcard.Open)
+        );
+
+        if (conf.print_es_query) {
+            Logger.println(request.toString());
+        }
+
+        return client.search(request, Map.class);
+    }
 }
