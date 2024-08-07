@@ -74,7 +74,7 @@ public class AggregationSample {
                 }
             }
         } catch (OpenSearchClientException | IOException e) {
-            System.out.println(e.getMessage());
+            e.printStackTrace();
         }
     }
 }

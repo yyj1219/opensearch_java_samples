@@ -68,19 +68,21 @@ public class IndexSample {
 
         try {
             // index 생성 요청과 응답
-            CreateIndexResponse response = client.indices()
-                    .create(createIndexBuilder -> createIndexBuilder
-                            .index(indexName)
-                            .settings(settings -> settings
-                                    .numberOfShards("1")
-                                    .numberOfReplicas("1")
-                            )
-                            .mappings(mappings -> mappings
-                                    .dynamic(DynamicMapping.Strict)
-                                    .source(_source -> _source.enabled(true))
-                                    .properties(properties)
-                            )
-                    );
+            CreateIndexRequest request = CreateIndexRequest.of(c -> c
+                    .index(indexName)
+                    .settings(settings -> settings
+                            .numberOfShards("1")
+                            .numberOfReplicas("1")
+                    )
+                    .mappings(mappings -> mappings
+                            .dynamic(DynamicMapping.Strict)
+                            .source(_source -> _source.enabled(true))
+                            .properties(properties)
+                    ));
+
+            System.out.println(OpenSearchUtil.convertToJson(request));
+
+            CreateIndexResponse response = client.indices().create(request);
 
             if (Boolean.TRUE.equals(response.acknowledged())) {
                 System.out.println("Index creation successful");

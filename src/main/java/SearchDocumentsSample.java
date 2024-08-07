@@ -131,6 +131,8 @@ public class SearchDocumentsSample {
                 ))
         );
 
+        System.out.println(OpenSearchUtil.convertToJson(request));
+
         try {
             SearchResponse<ObjectNode> response = client.search(request, ObjectNode.class);
 
@@ -224,6 +226,8 @@ public class SearchDocumentsSample {
                         FieldAndFormat.of(f -> f.field("value"))
                 ))
         );
+
+        System.out.println(OpenSearchUtil.convertToJson(request));
 
         try {
             // searchWithTerm API 실행

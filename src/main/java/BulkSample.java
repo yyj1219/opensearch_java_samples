@@ -47,7 +47,7 @@ public class BulkSample {
 
             System.out.println("Bulk Insert response items: " + bulkResponse.items().size());
         } catch (OpenSearchClientException | IOException e) {
-            System.out.println(e.getMessage());
+            e.printStackTrace();
         }
 
     }
@@ -85,7 +85,7 @@ public class BulkSample {
             System.out.println("Bulk Insert response items: " + bulkResponse.items().size());
 
         } catch (OpenSearchException | OpenSearchClientException | IOException e) {
-            System.out.println(e.getMessage());
+            e.printStackTrace();
         }
     }
 }
