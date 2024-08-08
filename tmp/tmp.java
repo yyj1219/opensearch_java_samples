@@ -136,4 +136,10 @@ echo "};"                                                        >> $POLICY_FILE
 
 echo "OpenSearch Configuration has been added to opensearch.yml and opensearch_security.policy."
 
-# Start the OpenSearch
+# Set the OPENSEARCH_JAVA_HOME environment variable
+export OPENSEARCH_JAVA_HOME=$OPENSEARCH_HOME/jdk
+
+# Run OpenSearch
+$OPENSEARCH_HOME/bin/opensearch -d -p opensearch.pid
+
+echo "Run OpenSearch"
