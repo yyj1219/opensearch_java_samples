@@ -41,7 +41,7 @@ public class SearchDocumentsSample {
                                 .terms(v -> v
                                         .value(
                                                 //filedValuesList.stream().map(FieldValue::of).collect(Collectors.toList())
-                                                OpenSearchUtil.getFieldValueList(filedValues)
+                                                OpenSearchUtil.toFieldValueList(filedValues)
                                         )
                                 )
                         )

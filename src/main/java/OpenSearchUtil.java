@@ -53,7 +53,7 @@ public class OpenSearchUtil {
      *
      * @see FieldValue
      */
-    public static List<FieldValue> getFieldValueList(Object value) {
+    public static List<FieldValue> toFieldValueList(Object value) {
         List<FieldValue> fieldValueList = new ArrayList<>();
         // integer, long, double, string, boolean, Consumer<FieldValue>...
         if (value instanceof Integer) {
