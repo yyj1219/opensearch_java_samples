@@ -1,8 +1,10 @@
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.opensearch.client.opensearch.OpenSearchClient;
-import org.opensearch.client.opensearch._types.FieldValue;
-import org.opensearch.client.opensearch._types.query_dsl.*;
+import org.opensearch.client.opensearch._types.query_dsl.BoolQuery;
+import org.opensearch.client.opensearch._types.query_dsl.FieldAndFormat;
+import org.opensearch.client.opensearch._types.query_dsl.Query;
+import org.opensearch.client.opensearch._types.query_dsl.TermQuery;
 import org.opensearch.client.opensearch.core.SearchRequest;
 import org.opensearch.client.opensearch.core.SearchResponse;
 import org.opensearch.client.opensearch.core.search.*;
@@ -13,7 +15,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 public class SearchDocumentsSample {
 
@@ -39,7 +40,8 @@ public class SearchDocumentsSample {
                                 .field("counter")
                                 .terms(v -> v
                                         .value(
-                                                filedValuesList.stream().map(FieldValue::of).collect(Collectors.toList())
+                                                //filedValuesList.stream().map(FieldValue::of).collect(Collectors.toList())
+                                                OpenSearchUtil.getFieldValueList(filedValues)
                                         )
                                 )
                         )
@@ -64,6 +66,8 @@ public class SearchDocumentsSample {
                         FieldAndFormat.of(f -> f.field("value"))
                 ))
         );
+
+        System.out.println(OpenSearchUtil.convertToJson(request));
 
         try {
             SearchResponse<Map> response = client.search(request, Map.class);
@@ -123,6 +127,13 @@ public class SearchDocumentsSample {
                 .index(indexName)
                 .query(query)
                 .size(10) /// 10건 반환
+                .source(SourceConfig.of(sc -> sc
+                        .filter(SourceFilter.of(sf -> sf
+                                        .includes("counter", "objHash", "value")
+                                        .excludes("ctime")
+                                )
+                        ))
+                )
                 .docvalueFields(Arrays.asList(
                         FieldAndFormat.of(f -> f.field("counter")),
                         FieldAndFormat.of(f -> f.field("ctime")),
@@ -219,6 +230,13 @@ public class SearchDocumentsSample {
                 .index(indexName)
                 .query(query)
                 .size(10) // 10 건 반환
+                .source(SourceConfig.of(sc -> sc
+                        .filter(SourceFilter.of(sf -> sf
+                                        .includes("counter", "objHash", "value")
+                                        .excludes("ctime")
+                                )
+                        ))
+                )
                 .docvalueFields(Arrays.asList(
                         FieldAndFormat.of(f -> f.field("counter")),
                         FieldAndFormat.of(f -> f.field("ctime")),
