@@ -1,4 +1,3 @@
-import jakarta.json.Json;
 import org.opensearch.client.json.JsonData;
 import org.opensearch.client.opensearch.OpenSearchClient;
 import org.opensearch.client.opensearch._types.*;
@@ -8,7 +7,6 @@ import org.opensearch.client.opensearch.core.SearchRequest;
 import org.opensearch.client.opensearch.core.SearchResponse;
 import org.opensearch.client.opensearch.core.search.Hit;
 import org.opensearch.client.opensearch.core.search.SourceConfig;
-import org.opensearch.client.opensearch.generic.OpenSearchClientException;
 import scouter.db.elastic.metering.XLogHistoMetering;
 import scouter.db.elastic.vo.HeatMapBucket;
 import scouter.db.elastic.vo.XLogHistoVo;
@@ -28,10 +26,8 @@ import tuna.server.db.rd.IEndUserTxRD;
 import tuna.server.db.rd.factory.TextRDFactory;
 import tuna.server.db.rd.opensearch.TextOschRD;
 import tuna.server.text.cache.LocalTextCache;
-import java.io.IOException;
-import java.time.ZoneId;
+import java.text.NumberFormat;
 import java.util.*;
-import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 public class EndUserTxOschRD implements IEndUserTxRD {
@@ -128,7 +124,7 @@ public class EndUserTxOschRD implements IEndUserTxRD {
                     "loadTime", "connectionTime", "sslConnectionTime", "dnsLookupTime", "timeToFirstByteRecv",
                     "type", "userIp", "gxid", "agentHash", "pageProcessingTime", "os", "browser", "uuid");
             ArrayList<FieldAndFormat> docValueFields = new ArrayList<>();
-            for (String docValueField: docValueFieldList) {
+            for (String docValueField : docValueFieldList) {
                 docValueFields.add(FieldAndFormat.of(f -> f.field(docValueField)));
             }
             SearchRequest request = new SearchRequest.Builder()
@@ -510,7 +506,7 @@ public class EndUserTxOschRD implements IEndUserTxRD {
                 ExtendedStatsAggregate elapsedTimeStat = bucket.aggregations().get("elapsedTimeStat").extendedStats();
                 ExtendedStatsAggregate timeToFirstByteRecvStat = bucket.aggregations().get("timeToFirstByteRecvStat").extendedStats();
                 ExtendedStatsAggregate timeToDomCompleteStat = bucket.aggregations().get("timeToDomCompleteStat").extendedStats();
-                
+
                 long hash = Long.valueOf(bucket.key());
 
                 Map<String, Object> innerMap = new HashMap<>();
@@ -543,410 +539,10 @@ public class EndUserTxOschRD implements IEndUserTxRD {
         }
     }
 
-    //  Composite Aggregation 을 이용한 Method
-    //  비어있는 값을 0으로 채울 수 없음
-    //  2019.07.19 : 비어있는 값을 채우기 위해 Term Aggregation 으로 대체
-    @Override
-    public Map<String, Object> LoadEndUserTimeHisto2(XLogInfoSearchArgs args) throws Exception {
-        try {
-            List<String> timeIndexList = DateUtil.getSearchRangeTime("enduser-info-", args.from, args.to);
-            if (timeIndexList == null) return new HashMap<String, Object>();
-
-            String[] indexes = timeIndexList.toArray(new String[timeIndexList.size()]);
-            SearchRequest searchRequest = new SearchRequest.Builder()
-                    .index(indexes)
-                    .build();
-
-            SearchSourceBuilder sourceBuilder = new SearchSourceBuilder();
-
-            QueryBuilder queryBuilder = QueryBuilders.boolQuery()
-                    .filter(QueryBuilders.rangeQuery("endTime").gte(args.from).lte(args.to))
-                    .filter(QueryBuilders.termsQuery("objHash", args.objList))
-                    .filter(QueryBuilders.termsQuery("type", new ArrayList<Integer>(Arrays.asList(E2ETypeConstants.DOCUMENT, E2ETypeConstants.XHR))));
-
-            if (args.serviceHash != 0L) {
-                ((BoolQueryBuilder) queryBuilder).filter(QueryBuilders.matchQuery("serviceHash", args.serviceHash));
-            }
-            ((BoolQueryBuilder) queryBuilder).mustNot(QueryBuilders.matchQuery("type", E2ETypeConstants.ERROR));
-
-            // 2. set composite aggregation.
-            List<CompositeValuesSourceBuilder<?>> compositeValuesSourceBuilderList = new ArrayList<>();
-            DateHistogramValuesSourceBuilder histogramValuesSourceBuilder = new DateHistogramValuesSourceBuilder("time");
-
-            if ((args.to - args.from) > (DateUtil.MILLIS_PER_DAY * 28)) {
-                histogramValuesSourceBuilder.dateHistogramInterval(DateHistogramInterval.hours(1));
-            } else if ((args.to - args.from) > (DateUtil.MILLIS_PER_DAY * 2)) {
-                histogramValuesSourceBuilder.dateHistogramInterval(DateHistogramInterval.minutes(30));
-            } else if ((args.to - args.from) > DateUtil.MILLIS_PER_DAY) {
-                histogramValuesSourceBuilder.dateHistogramInterval(DateHistogramInterval.minutes(10));
-            } else if ((args.to - args.from) > (DateUtil.MILLIS_PER_HOUR * 6)) {
-                histogramValuesSourceBuilder.dateHistogramInterval(DateHistogramInterval.minutes(5));
-            } else {
-                histogramValuesSourceBuilder.dateHistogramInterval(DateHistogramInterval.seconds(30));
-            }
-
-            // Time Aggregation
-            histogramValuesSourceBuilder.field("endTime");
-            compositeValuesSourceBuilderList.add(histogramValuesSourceBuilder);
-            // Type Aggregation
-            compositeValuesSourceBuilderList.add(new TermsValuesSourceBuilder("type").field("type").missingBucket(true));
-
-            CompositeAggregationBuilder aggBuilder = AggregationBuilders.composite("groupby", compositeValuesSourceBuilderList);
-            aggBuilder.subAggregation(AggregationBuilders.avg("elapsedTimeStat").field("elapsedTime")).size(conf.es_composite_bucket_size);
-            aggBuilder.subAggregation(AggregationBuilders.avg("timeToFirstByteRecvStat").field("timeToFirstByteRecv")).size(conf.es_composite_bucket_size);
-            aggBuilder.subAggregation(AggregationBuilders.avg("timeToDomCompleteStat").field("timeToDomComplete")).size(conf.es_composite_bucket_size);
-
-            // 3. set query
-            sourceBuilder.query(queryBuilder)
-                    .fetchSource(false) // no source
-                    .aggregation(aggBuilder)
-                    .size(0);  // no hits
-
-            if (conf.print_es_query) {
-                Logger.println(sourceBuilder.toString());
-            }
-
-            searchRequest.source(sourceBuilder).indicesOptions(IndicesOptions.LENIENT_EXPAND_OPEN);
-            OpenSearchClient client = OpenSearchConfig.createOpenSearchClient();
-            boolean initialSearch = true;
-            int bucketSize = 0;
-            ParsedComposite parsedComposite = null;
-
-            List<Long> pageTimeList = new ArrayList<>();
-            List<Long> pageElapsedList = new ArrayList<>();
-            List<Long> pageFirstByteList = new ArrayList<>();
-            List<Long> pageDomCompleteList = new ArrayList<>();
-            List<Long> xhrTimeList = new ArrayList<>();
-            List<Long> xhrElapsedList = new ArrayList<>();
-            List<Long> xhrFirstByteList = new ArrayList<>();
-
-            do {
-                if (!initialSearch) {
-                    Map<String, Object> afterKey = parsedComposite.afterKey();
-                    aggBuilder.aggregateAfter(afterKey);
-                } else {
-                    initialSearch = false;
-                }
-                SearchResponse searchResponse = client.search(searchRequest, RequestOptions.DEFAULT);
-                Aggregations aggs = searchResponse.getAggregations();
-                if (aggs == null) break;
-                parsedComposite = aggs.get("groupby");
-
-                List<ParsedComposite.ParsedBucket> bucketList = parsedComposite.getBuckets();
-                bucketSize = bucketList.size();
-
-                for (ParsedComposite.ParsedBucket bucket : bucketList) {
-                    Long time = (Long) bucket.getKey().get("time");
-                    int type = Integer.parseInt(bucket.getKey().get("type").toString());
-                    Map<String, Aggregation> aggMap = bucket.getAggregations().getAsMap();
-                    for (String key : aggMap.keySet()) {
-                        Object obj = aggMap.get(key);
-                        Long value = 0L;
-                        if (type == 11) {
-                            if (key.equals("elapsedTimeStat")) {
-                                pageTimeList.add(time);
-                                pageElapsedList.add((long) ((Avg) obj).getValue());
-                            } else if (key.equals("timeToFirstByteRecvStat")) {
-                                pageFirstByteList.add((long) ((Avg) obj).getValue());
-                            } else if (key.equals("timeToDomCompleteStat")) {
-                                pageDomCompleteList.add((long) ((Avg) obj).getValue());
-                            }
-                        } else if (type == 5) {
-                            if (key.equals("elapsedTimeStat")) {
-                                xhrTimeList.add(time);
-                                xhrElapsedList.add((long) ((Avg) obj).getValue());
-                            } else if (key.equals("timeToFirstByteRecvStat")) {
-                                xhrFirstByteList.add((long) ((Avg) obj).getValue());
-                            }
-                        }
-                    }
-                }
-            } while (bucketSize > 0);
-
-            Map<String, Object> pageMap = new HashMap<>();
-            pageMap.put("time", pageTimeList);
-            pageMap.put("elapsedTimeStat", pageElapsedList);
-            pageMap.put("timeToFirstByteRecvStat", pageFirstByteList);
-            pageMap.put("timeToDomCompleteStat", pageDomCompleteList);
-
-            Map<String, Object> xhrMap = new HashMap<>();
-            xhrMap.put("time", xhrTimeList);
-            xhrMap.put("elapsedTimeStat", xhrElapsedList);
-            xhrMap.put("timeToFirstByteRecvStat", xhrFirstByteList);
-
-            Map<String, Object> result = new HashMap<>();
-            result.put("page", pageMap);
-            result.put("xhr", xhrMap);
-
-            if (conf.print_es_query_result) {
-                QueryUtil.print(result);
-            }
-            return result;
-
-        } catch (Exception ex) {
-            System.out.println(ex.getMessage());
-            throw ex;
-        }
+    private NumberFormat getNumberFormat(){
+        NumberFormat nf = NumberFormat.getInstance();
+        nf.setGroupingUsed(false);
+        nf.setMaximumFractionDigits(3);
+        return nf;
     }
-
-    @Override
-    public Map<String, Object> LoadEndUserTimeHisto(XLogInfoSearchArgs args) throws Exception {
-        try {
-            List<String> timeIndexList = DateUtil.getSearchRangeTime("enduser-info-", args.from, args.to);
-            if (timeIndexList == null) return new HashMap<String, Object>();
-
-            String[] indexes = timeIndexList.toArray(new String[timeIndexList.size()]);
-            SearchRequest searchRequest = new SearchRequest.Builder()
-                    .index(indexes)
-                    .build();
-
-            SearchSourceBuilder sourceBuilder = new SearchSourceBuilder();
-
-            QueryBuilder queryBuilder = QueryBuilders.boolQuery()
-                    .filter(QueryBuilders.rangeQuery("endTime").gte(args.from).lte(args.to))
-                    .filter(QueryBuilders.termsQuery("objHash", args.objList))
-                    .filter(QueryBuilders.termsQuery("type", new ArrayList<Integer>(Arrays.asList(E2ETypeConstants.DOCUMENT, E2ETypeConstants.XHR))));
-
-            if (args.serviceHash != 0L) {
-                ((BoolQueryBuilder) queryBuilder).filter(QueryBuilders.matchQuery("serviceHash", args.serviceHash));
-            }
-            ((BoolQueryBuilder) queryBuilder).mustNot(QueryBuilders.matchQuery("type", E2ETypeConstants.ERROR));
-
-            Map<String, Object> filters = args.fileterMap;
-            for (String key : filters.keySet()) {
-                if (key.equals("elapsed")) {
-                    ((BoolQueryBuilder) queryBuilder).filter(QueryBuilders.rangeQuery("elapsedTime").gte(filters.get(key)));
-                } else if (key.equals("error")) {
-                    ((BoolQueryBuilder) queryBuilder).mustNot(QueryBuilders.matchQuery("errorHash", 0));
-                } else {
-                    ((BoolQueryBuilder) queryBuilder).filter(QueryBuilders.termsQuery(key, filters.get(key)));
-                }
-            }
-
-            DateHistogramAggregationBuilder histogramBuilder = AggregationBuilders.dateHistogram("time")
-                    .dateHistogramInterval(new DateHistogramIntervalManager().getHistogramInterval(args.from, args.to))
-                    .field("endTime")
-                    .extendedBounds(new ExtendedBounds(args.from, args.to))
-                    .minDocCount(0);
-
-            TermsAggregationBuilder termsAggregationBuilder = AggregationBuilders.terms("groupby")
-                    .field("type")
-                    .minDocCount(0);
-            if (args.shardSize > 0) {
-                termsAggregationBuilder.shardSize(args.shardSize);
-            }
-            termsAggregationBuilder.subAggregation(AggregationBuilders.avg("avg_elapsed").field("elapsedTime"));
-            termsAggregationBuilder.subAggregation(AggregationBuilders.avg("avg_firstnet").field("timeToFirstByteRecv"));
-            termsAggregationBuilder.subAggregation(AggregationBuilders.avg("avg_dom").field("timeToDomComplete"));
-            histogramBuilder.subAggregation(termsAggregationBuilder);
-
-            sourceBuilder.query(queryBuilder)
-                    .fetchSource(false)
-                    .aggregation(histogramBuilder)
-                    .size(0)
-                    .timeout(new TimeValue(60, TimeUnit.SECONDS));
-
-            if (conf.print_es_query) {
-                Logger.println(sourceBuilder.toString());
-            }
-
-            searchRequest.source(sourceBuilder)
-                    .indicesOptions(IndicesOptions.LENIENT_EXPAND_OPEN);
-
-            OpenSearchClient client = OpenSearchConnectionManager.getInstance().getReadClient();
-
-            SearchResponse searchResponse = client.search(searchRequest, RequestOptions.DEFAULT);
-
-            List<Long> pageTimeList = new ArrayList<Long>();
-            List<Long> pageElapsedList = new ArrayList<Long>();
-            List<Long> pageFirstByteList = new ArrayList<Long>();
-            List<Long> pageDomCompleteList = new ArrayList<Long>();
-            List<Long> xhrTimeList = new ArrayList<Long>();
-            List<Long> xhrElapsedList = new ArrayList<Long>();
-            List<Long> xhrFirstByteList = new ArrayList<Long>();
-
-            Map<String, Object> result = new HashMap<String, Object>();
-
-            if (searchResponse.getAggregations() == null) return result;
-            if (!searchResponse.getAggregations().getAsMap().containsKey("time")) return result;
-
-            ParsedDateHistogram pdh = (ParsedDateHistogram) searchResponse.getAggregations().getAsMap().get("time");
-            List<ParsedDateHistogram.ParsedBucket> bucketList = (List<ParsedDateHistogram.ParsedBucket>) pdh.getBuckets();
-
-            for (ParsedDateHistogram.ParsedBucket bucket : bucketList) {
-                Long time = Long.parseLong(bucket.getKeyAsString());
-
-                Terms terms = bucket.getAggregations().get("groupby");
-                List<ParsedTerms.ParsedBucket> innerBucketList = (List<ParsedTerms.ParsedBucket>) terms.getBuckets();
-
-                if (innerBucketList.size() == 0) {
-                    pageTimeList.add(time);
-                    pageElapsedList.add(0L);
-                    pageFirstByteList.add(0L);
-                    pageDomCompleteList.add(0L);
-                    xhrTimeList.add(time);
-                    xhrElapsedList.add(0L);
-                    xhrFirstByteList.add(0L);
-                } else if (innerBucketList.size() == 1) {
-                    if (innerBucketList.get(0).getKeyAsString().equals("11")) {
-                        xhrTimeList.add(time);
-                        xhrElapsedList.add(0L);
-                        xhrFirstByteList.add(0L);
-                    } else if (innerBucketList.get(0).getKeyAsString().equals("5")) {
-                        pageTimeList.add(time);
-                        pageElapsedList.add(0L);
-                        pageFirstByteList.add(0L);
-                        pageDomCompleteList.add(0L);
-                    }
-                }
-
-                for (ParsedTerms.ParsedBucket innerBucket : innerBucketList) {
-                    int type = Integer.parseInt(innerBucket.getKeyAsString());
-                    Map<String, Aggregation> aggMap = innerBucket.getAggregations().getAsMap();
-                    for (String key : aggMap.keySet()) {
-                        Object obj = aggMap.get(key);
-                        Double d = ((Avg) obj).getValue();
-                        Long value = Double.isInfinite(d) ? 0L : d.longValue();
-
-                        if (type == 11) {
-                            if (key.equals("avg_elapsed")) {
-                                pageTimeList.add(time);
-                                pageElapsedList.add(value);
-                            } else if (key.equals("avg_firstnet")) {
-                                pageFirstByteList.add(value);
-                            } else if (key.equals("avg_dom")) {
-                                pageDomCompleteList.add(value);
-                            }
-                        } else if (type == 5) {
-                            if (key.equals("avg_elapsed")) {
-                                xhrTimeList.add(time);
-                                xhrElapsedList.add(value);
-                            } else if (key.equals("avg_firstnet")) {
-                                xhrFirstByteList.add(value);
-                            }
-                        }
-                    }
-                }
-            }
-
-            Map<String, Object> pageMap = new HashMap<String, Object>();
-            pageMap.put("time", pageTimeList);
-            pageMap.put("elapsedTimeStat", pageElapsedList);
-            pageMap.put("timeToFirstByteRecvStat", pageFirstByteList);
-            pageMap.put("timeToDomCompleteStat", pageDomCompleteList);
-
-            Map<String, Object> xhrMap = new HashMap<String, Object>();
-            xhrMap.put("time", xhrTimeList);
-            xhrMap.put("elapsedTimeStat", xhrElapsedList);
-            xhrMap.put("timeToFirstByteRecvStat", xhrFirstByteList);
-
-            result.put("page", pageMap);
-            result.put("xhr", xhrMap);
-
-            if (conf.print_es_query_result) {
-                QueryUtil.print(result);
-            }
-            return result;
-
-        } catch (Exception ex) {
-            System.out.println(ex.getMessage());
-            throw ex;
-        }
-
-        @Override
-        public Map<Long, Map<String, List<Long>>> LoadEndUserTimeHistoByInstance(XLogInfoSearchArgs args) throws Exception {
-            try {
-                List<String> timeIndexList = DateUtil.getSearchRangeTime("enduser-info-", args.from, args.to);
-                if (timeIndexList == null) return new HashMap<Long, Map<String, List<Long>>>();
-
-                String[] indexes = timeIndexList.toArray(new String[timeIndexList.size()]);
-                SearchRequest searchRequest = new SearchRequest(indexes);
-                SearchSourceBuilder sourceBuilder = new SearchSourceBuilder();
-
-                QueryBuilder queryBuilder = QueryBuilders.boolQuery()
-                        .filter(QueryBuilders.rangeQuery("endTime").gte(args.from).lte(args.to))
-                        .filter(QueryBuilders.termsQuery("objHash", args.objList))
-                        .filter(QueryBuilders.matchQuery("type", args.type));
-
-                if (args.serviceHash != 0L) {
-                    ((BoolQueryBuilder) queryBuilder).filter(QueryBuilders.matchQuery("serviceHash", args.serviceHash));
-                }
-                ((BoolQueryBuilder) queryBuilder).mustNot(QueryBuilders.matchQuery("type", E2ETypeConstants.ERROR));
-
-                DateHistogramAggregationBuilder histogramBuilder = new DateHistogramAggregationBuilder("time");
-                histogramBuilder.dateHistogramInterval(new DateHistogramIntervalManager().getHistogramInterval(args.from, args.to));
-                histogramBuilder.field("endTime").extendedBounds(new ExtendedBounds(args.from, args.to));
-                histogramBuilder.minDocCount(0);
-
-                histogramBuilder.subAggregation(AggregationBuilders.avg("elapsedTimeStat").field("elapsedTime"));
-                histogramBuilder.subAggregation(AggregationBuilders.avg("timeToFirstByteRecvStat").field("timeToFirstByteRecv"));
-                histogramBuilder.subAggregation(AggregationBuilders.avg("timeToDomCompleteStat").field("timeToDomComplete"));
-
-                sourceBuilder.query(queryBuilder)
-                        .fetchSource(false)
-                        .aggregation(histogramBuilder)
-                        .size(0)
-                        .timeout(new TimeValue(60, TimeUnit.SECONDS));
-
-                if (conf.print_es_query) {
-                    Logger.println(sourceBuilder.toString());
-                }
-
-                searchRequest.source(sourceBuilder).indicesOptions(IndicesOptions.LENIENT_EXPAND_OPEN);
-                OpenSearchClient client = OpenSearchConnectionManager.getInstance().getReadClient(); // OpenSearchClient 사용
-                SearchResponse searchResponse = client.search(searchRequest, RequestOptions.DEFAULT);
-
-                Map<Long, Map<String, List<Long>>> result = new HashMap<Long, Map<String, List<Long>>>();
-
-                if (searchResponse.getAggregations() == null) return result;
-                if (!searchResponse.getAggregations().getAsMap().containsKey("time")) return result;
-
-                ParsedDateHistogram pdh = (ParsedDateHistogram) searchResponse.getAggregations().getAsMap().get("time");
-                List<ParsedDateHistogram.ParsedBucket> bucketList = (List<ParsedDateHistogram.ParsedBucket>) pdh.getBuckets();
-
-                Map<String, List<Long>> innerMap = new HashMap<String, List<Long>>();
-                innerMap.put("time", new ArrayList<Long>());
-                innerMap.put("elapsedTime", new ArrayList<Long>());
-                innerMap.put("timeToFirstByteRecv", new ArrayList<Long>());
-                if (args.type == Byte.valueOf("11")) innerMap.put("timeToDomComplete", new ArrayList<Long>());
-
-                for (ParsedDateHistogram.ParsedBucket bucket : bucketList) {
-                    Long time = Long.parseLong(bucket.getKeyAsString());
-                    innerMap.get("time").add(time);
-                    if (bucket.getAggregations().getAsMap().size() == 0) System.out.println("Empty Map");
-                    Map<String, Aggregation> aggMap = bucket.getAggregations().getAsMap();
-                    for (String key : aggMap.keySet()) {
-                        Object obj = aggMap.get(key);
-                        Double d = ((Avg) obj).getValue();
-                        Long value = Double.isInfinite(d) ? 0L : d.longValue();
-
-                        if (key.equals("elapsedTimeStat")) {
-                            innerMap.get("elapsedTime").add(value);
-                        } else if (key.equals("timeToFirstByteRecvStat")) {
-                            innerMap.get("timeToFirstByteRecv").add(value);
-                        } else if (key.equals("timeToDomCompleteStat") && args.type == Byte.valueOf("11")) {
-                            innerMap.get("timeToDomComplete").add(value);
-                        }
-                    }
-                }
-
-                result.put(Long.parseLong(args.objList.get(0).toString()), innerMap);
-
-                if (conf.print_es_query_result) {
-                    QueryUtil.print(result);
-                }
-                return result;
-
-            } catch (Exception ex) {
-                System.out.println(ex.getMessage());
-                throw ex;
-            }
-
-
-            private NumberFormat getNumberFormat(){
-                NumberFormat nf = NumberFormat.getInstance();
-                nf.setGroupingUsed(false);
-                nf.setMaximumFractionDigits(3);
-                return nf;
-            }
-        }
+}
