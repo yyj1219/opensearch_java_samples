@@ -1,3 +1,4 @@
+import org.elasticsearch.action.bulk.BulkRequest;
 import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchResponse;
@@ -850,57 +851,6 @@ public class EndUserTxESRD implements IEndUserTxRD {
 
             result.put(Long.parseLong(args.objList.get(0).toString()), innerMap);
 
-/*
-            do{
-                if(!initialSearch){
-                    Map<String,Object> afterKey = parsedComposite.afterKey();
-                    aggBuilder.aggregateAfter(afterKey);
-                } else {
-                    initialSearch = false;
-                }
-
-                Aggregations aggs = searchResponse.getAggregations();
-                if(aggs == null)    break;
-
-                if(aggs.get("groupby") == null) return result;
-                parsedComposite = aggs.get("groupby");
-
-                List<ParsedComposite.ParsedBucket> bucketList = parsedComposite.getBuckets();
-                bucketSize = bucketList.size();
-
-                for(ParsedComposite.ParsedBucket bucket : bucketList) {
-                    Long time = (Long)bucket.getKey().get("time");
-                    long objHash = Long.parseLong(bucket.getKey().get("objHash").toString());
-
-                    if(!result.containsKey(objHash)){
-                        Map<String, List<Long>> innerMap = new HashMap<String, List<Long>>();
-                        innerMap.put("time", new ArrayList<Long>());
-                        innerMap.put("elapsedTime", new ArrayList<Long>());
-                        innerMap.put("timeToFirstByteRecv", new ArrayList<Long>());
-                        if(args.type == Byte.valueOf("11")) innerMap.put("timeToDomComplete", new ArrayList<Long>());
-
-                        result.put( objHash, innerMap);
-                    }
-
-                    result.get(objHash).get("time").add(time);
-
-                    Map<String , Aggregation > aggMap  = bucket.getAggregations().getAsMap();
-                    for(String key  : aggMap.keySet()) {
-                        Object obj = aggMap.get(key);
-                        Long value = 0L;
-
-                        if(key.equals("elapsedTimeStat")){
-                            result.get(objHash).get("elapsedTime").add( (long)((Avg)obj).getValue() );
-                        }else if(key.equals("timeToFirstByteRecvStat")){
-                            result.get(objHash).get("timeToFirstByteRecv").add( (long)((Avg)obj).getValue() );
-                        }else if(key.equals("timeToDomCompleteStat") && args.type == Byte.valueOf("11")){
-                            result.get(objHash).get("timeToDomComplete").add( (long)((Avg)obj).getValue() );
-                        }
-                    }
-                }
-
-            }while(bucketSize > 0);
-*/
             if(conf.print_es_query_result) {
                 QueryUtil.print(result);
             }
